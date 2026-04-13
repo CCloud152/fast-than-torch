@@ -1,0 +1,3 @@
+torch == latest
+triton == latest
+transformers == latest
