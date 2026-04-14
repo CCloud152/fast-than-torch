@@ -2,7 +2,6 @@
 triton-inference-lab/
 ├── README.md                 # 项目简报
 ├── requirements.txt          # torch, triton, transformers
-├── config.py                 # 模型配置与实验参数
 │
 ├── model/                    # 模型定义（PyTorch + Triton混合）
 │   ├── __init__.py
