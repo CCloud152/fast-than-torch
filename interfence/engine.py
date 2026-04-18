@@ -8,9 +8,10 @@ import torch.nn as nn
 from typing import Optional, List, Generator
 
 from ..model.modling_llama import LlamaForCausalLM
-from ..model.config import LlamaConfig
 from .kv_cache import KVCache
-from .tokenizer_utils import TokenizerUtils
+
+from transformers import PreTrainedTokenizer
+from transformers import AutoConfig
 
 
 class InferenceEngine:
@@ -25,28 +26,20 @@ class InferenceEngine:
     
     def __init__(
         self,
-        model: Optional[LlamaForCausalLM] = None,
-        config: Optional[LlamaConfig] = None,
-        tokenizer: Optional[TokenizerUtils] = None,
+        model: LlamaForCausalLM,
+        tokenizer: PreTrainedTokenizer,
         device: str = "cuda",
         dtype: torch.dtype = torch.float16,
     ):
         self.device = device
         self.dtype = dtype
         
-        # 模型
-        if model is not None:
-            self.model = model.to(device).to(dtype)
-        elif config is not None:
-            self.model = LlamaForCausalLM(config).to(device).to(dtype)
-        else:
-            raise ValueError("Must provide either model or config")
-        
+        self.model = model.to(device).to(dtype)
         self.model.eval()
         self.config = self.model.config
         
         # Tokenizer
-        self.tokenizer = tokenizer or TokenizerUtils()
+        self.tokenizer = tokenizer
         
         # KV Cache
         self.kv_cache = None
@@ -178,56 +171,6 @@ class InferenceEngine:
         
         return generated_text
     
-    def generate_stream(
-        self,
-        prompt: str,
-        max_new_tokens: int = 100,
-        temperature: float = 0.7,
-        top_p: float = 0.9,
-        **kwargs,
-    ) -> Generator[str, None, None]:
-        """
-        流式生成
-        
-        Yields:
-            token: 每个生成的token
-        """
-        # 编码输入
-        input_ids = self.tokenizer.encode(prompt, add_special_tokens=True)
-        input_ids = input_ids.to(self.device)
-        batch_size, prompt_len = input_ids.shape
-        
-        # 初始化KV Cache
-        self._init_kv_cache(batch_size)
-        
-        # Prefill
-        outputs = self.model(input_ids=input_ids, use_cache=True)
-        next_token_logits = outputs["logits"][:, -1, :]
-        
-        # 生成循环
-        for _ in range(max_new_tokens):
-            # 采样
-            next_token = self._sample_token(
-                next_token_logits,
-                temperature,
-                top_p,
-                50,  # top_k
-                True,  # do_sample
-            )
-            
-            # 解码token
-            token_text = self.tokenizer.decode(next_token, skip_special_tokens=True)
-            yield token_text
-            
-            # 检查EOS
-            if next_token.item() == self.tokenizer.eos_token_id:
-                break
-            
-            # 下一个token
-            input_ids = next_token.unsqueeze(0)
-            outputs = self.model(input_ids=input_ids, use_cache=True)
-            next_token_logits = outputs["logits"][:, -1, :]
-    
     def _sample_token(
         self,
         logits: torch.Tensor,
@@ -311,15 +254,14 @@ if __name__ == "__main__":
     print("Testing Inference Engine...")
     
     # 创建模型配置（使用小配置测试）
-    config = LlamaConfig(
-        vocab_size=128256,
-        hidden_size=1024,  # 小配置
-        intermediate_size=4096,
-        num_hidden_layers=4,
-        num_attention_heads=8,
-        num_key_value_heads=4,
-        max_position_embeddings=2048,
-    )
+    config = AutoConfig.from_pretrained("meta-llama/Llama-3.2-3B")
+    config.vocab_size=128256
+    config.hidden_size=1024
+    config.intermediate_size=4096
+    config.num_hidden_layers=4
+    config.num_attention_heads=8 
+    config.num_key_value_heads=4
+    config.max_position_embeddings=2048
     
     # 创建引擎
     engine = InferenceEngine(config=config)

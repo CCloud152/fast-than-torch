@@ -11,7 +11,7 @@ triton-inference-lab/
 │       ├── __init__.py
 │       ├── rms_norm_triton.py    # Triton融合算子：RMSNorm + Residual
 │       ├── rope_triton.py        # Triton融合算子：RoPE计算
-│       ├── ······
+│       ├── ffn_fised_triton.py   # Triton融合算子：MLP计算 
 │       └── attention_triton.py   # Triton融合算子：简化FlashAttention
 │
 ├── kernels/                  # Triton算子库（核心实验内容）

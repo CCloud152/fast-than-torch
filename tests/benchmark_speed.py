@@ -11,7 +11,8 @@ import os
 # 添加父目录到路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from model.config import LlamaConfig
+from transformers import AutoConfig
+
 from model.modling_llama import LlamaForCausalLM
 
 
@@ -117,7 +118,7 @@ def benchmark_attention():
         print("CUDA not available, skipping")
         return
     
-    from model.layers.attention import LlamaAttentionTriton
+    from triton_infer.llama3.model.layers.attention_triton import LlamaAttentionTriton
     
     batch_size, seq_len = 2, 1024
     hidden_size = 3072
@@ -171,15 +172,14 @@ def benchmark_full_model():
         return
     
     # 使用中等配置
-    config = LlamaConfig(
-        vocab_size=128256,
-        hidden_size=2048,
-        intermediate_size=8192,
-        num_hidden_layers=16,
-        num_attention_heads=16,
-        num_key_value_heads=4,
-        max_position_embeddings=8192,
-    )
+    config = AutoConfig.from_pretrained("meta-llama/Llama-3.2-3B")
+    config.vocab_size = 128256
+    config.hidden_size = 2048
+    config.intermediate_size=8192
+    config.num_hidden_layers=16
+    config.num_attention_heads=16
+    config.num_key_value_heads=4
+    config.max_position_embeddings=8192
     
     batch_size = 1
     seq_len = 512
@@ -242,15 +242,14 @@ def benchmark_generation():
     from interfence.engine import InferenceEngine
     
     # 使用小配置快速测试
-    config = LlamaConfig(
-        vocab_size=128256,
-        hidden_size=1024,
-        intermediate_size=4096,
-        num_hidden_layers=8,
-        num_attention_heads=8,
-        num_key_value_heads=4,
-        max_position_embeddings=4096,
-    )
+    config = AutoConfig.from_pretrained("meta-llama/Llama-3.2-3B")
+    config.vocab_size = 128256
+    config.hidden_size = 1024
+    config.intermediate_size = 4096
+    config.num_hidden_layers = 8
+    config.num_attention_heads = 8
+    config.num_key_value_heads = 4
+    config.max_position_embeddings = 4096
     
     prompt = "Hello world, this is a test"
     max_new_tokens = 50

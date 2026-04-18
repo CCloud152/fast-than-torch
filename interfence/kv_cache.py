@@ -4,173 +4,186 @@ KV Cache 管理
 """
 
 import torch
-from typing import List, Tuple, Optional
-
+from typing import Tuple
 
 class KVCache:
     """
-    KV Cache 管理器
+    KV Cache 管理器 (支持动态扩容)
     
     支持:
-    - 连续内存分配
-    - 动态扩展
-    - GQA (Grouped Query Attention) 优化
+    - 动态扩展 (Dynamic Expansion): 当序列长度超过当前容量时自动扩容
+    - 连续内存分配 (在单次分配内)
+    - GQA (Grouped Query Attention)
+    
+    策略: 倍增扩容 (Amortized O(1) append)
     """
     
     def __init__(
         self,
         num_layers: int,
         batch_size: int,
-        max_seq_len: int,
-        num_kv_heads: int,
-        head_dim: int,
+        max_seq_len: int = 2048,  # 初始容量/最大容量限制
+        num_kv_heads: int = 32,
+        head_dim: int = 128,
         dtype: torch.dtype = torch.float16,
         device: str = "cuda",
+        growth_factor: float = 2.0,  # 扩容倍数
+        initial_capacity: int = None, # 初始分配大小
     ):
         self.num_layers = num_layers
         self.batch_size = batch_size
-        self.max_seq_len = max_seq_len
+
         self.num_kv_heads = num_kv_heads
         self.head_dim = head_dim
+        self.dtype = dtype
+        self.device = device
+        self.growth_factor = growth_factor
+        self.max_capacity = max_seq_len 
+        
+        # 设置初始容量
+        # 如果指定了 initial_capacity，否则默认为 max_seq_len 的 1/4 或 256，取较大值
+        self.initial_capacity = initial_capacity or max(256, max_seq_len // 4)
+        
+        # 记录当前序列长度 (逻辑长度)
+        self.seq_lengths = torch.zeros(batch_size, dtype=torch.long, device=device)
         
         # 为每一层分配KV Cache
-        # 形状: [batch, num_kv_heads, max_seq_len, head_dim]
+        # 形状: [batch, num_kv_heads, current_capacity, head_dim]
+        # 注意：这里的 max_seq_len 现在代表的是当前物理容量 (Capacity)
         self.k_cache = [
             torch.zeros(
-                batch_size, num_kv_heads, max_seq_len, head_dim,
-                dtype=dtype, device=device
-            )
-            for _ in range(num_layers)
+                batch_size, 
+                num_kv_heads, 
+                self.initial_capacity, 
+                head_dim, 
+                dtype=dtype, 
+                device=device
+            ) for _ in range(num_layers)
         ]
         self.v_cache = [
             torch.zeros(
-                batch_size, num_kv_heads, max_seq_len, head_dim,
-                dtype=dtype, device=device
-            )
-            for _ in range(num_layers)
+                batch_size, 
+                num_kv_heads, 
+                self.initial_capacity, 
+                head_dim, 
+                dtype=dtype, 
+                device=device
+            ) for _ in range(num_layers)
         ]
         
-        # 记录当前序列长度
-        self.seq_lengths = torch.zeros(batch_size, dtype=torch.long, device=device)
-    
+        # 记录当前物理容量 (每个 Tensor 实际能存多少)
+        # 注意：所有层的容量必须一致，否则无法进行 Attention 计算
+        self.current_capacity = self.initial_capacity 
+
+    def _resize(self, layer_idx: int, new_capacity: int):
+        """
+        核心扩容函数
+        逻辑：创建更大的 Tensor -> 拷贝旧数据 -> 替换引用
+        """
+        # 1. 创建新 Tensor
+        new_k = torch.zeros(
+            self.batch_size, 
+            self.num_kv_heads, 
+            new_capacity, 
+            self.head_dim, 
+            dtype=self.dtype, 
+            device=self.device
+        )
+        new_v = torch.zeros(
+            self.batch_size, 
+            self.num_kv_heads, 
+            new_capacity, 
+            self.head_dim, 
+            dtype=self.dtype, 
+            device=self.device
+        )
+        
+        # 2. 拷贝旧数据
+        # 注意：这里只拷贝实际有数据的部分 (seq_lengths)，而不是整个旧 Tensor
+        current_len = self.seq_lengths.max().item() # 取 batch 中最长的序列长度
+        new_k[:, :, :current_len, :] = self.k_cache[layer_idx][:, :, :current_len, :]
+        new_v[:, :, :current_len, :] = self.v_cache[layer_idx][:, :, :current_len, :]
+        
+        # 3. 替换引用 (旧 Tensor 会被 Python GC 自动回收)
+        self.k_cache[layer_idx] = new_k
+        self.v_cache[layer_idx] = new_v
+
+    def _ensure_capacity(self, layer_idx: int, required_capacity: int):
+        """
+        检查并确保空间足够
+        如果不够，触发扩容
+        """
+        # 如果当前物理容量已经足够，直接返回
+        if self.current_capacity >= required_capacity:
+            return
+            
+        # 边界检查：不能超过用户设定的 max_capacity
+        if required_capacity > self.max_capacity:
+            raise RuntimeError(
+                f"Required capacity {required_capacity} exceeds max_capacity {self.max_capacity}. "
+                f"Please increase max_seq_len in the constructor."
+            )
+        
+        # 计算新容量：通常是当前容量的 growth_factor 倍，或者刚好满足需求，取较大值
+        new_capacity = int(max(self.current_capacity * self.growth_factor, required_capacity))
+        
+        # 限制新容量不超过 max_capacity
+        new_capacity = min(new_capacity, self.max_capacity)
+        
+        # 对所有层进行扩容 (为了保持一致性，通常所有层一起扩)
+        # 注意：这里简化了逻辑，假设所有层都需要同步扩容
+        for i in range(self.num_layers):
+            self._resize(i, new_capacity)
+            
+        # 更新全局记录的容量
+        self.current_capacity = new_capacity
+
     def get_cache(self, layer_idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """获取指定层的KV Cache"""
         return self.k_cache[layer_idx], self.v_cache[layer_idx]
-    
+
     def update_cache(
-        self,
-        layer_idx: int,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
+        self, 
+        layer_idx: int, 
+        key_states: torch.Tensor, 
+        value_states: torch.Tensor, 
         positions: torch.Tensor = None,
     ):
         """
         更新KV Cache
-        
-        Args:
-            layer_idx: 层索引
-            key_states: [batch, num_kv_heads, seq_len, head_dim]
-            value_states: [batch, num_kv_heads, seq_len, head_dim]
-            positions: 更新的位置，None表示追加到末尾
+        注意：positions 参数如果存在，必须在当前容量范围内
         """
         batch_size, num_kv_heads, seq_len, head_dim = key_states.shape
         
+        # 如果是追加模式，计算需要的总容量
         if positions is None:
-            # 追加模式
+            required_capacity = self.seq_lengths[0].item() + seq_len
+            
+            # 触发扩容检查
+            self._ensure_capacity(layer_idx, required_capacity)
+            
+            # 写入数据 (追加到末尾)
             start_pos = self.seq_lengths[0].item()
             end_pos = start_pos + seq_len
-            
             self.k_cache[layer_idx][:, :, start_pos:end_pos, :] = key_states
             self.v_cache[layer_idx][:, :, start_pos:end_pos, :] = value_states
             
-            # 更新序列长度
+            # 更新逻辑长度
             self.seq_lengths += seq_len
+            
         else:
-            # 指定位置更新
+            # 在指定位置更新时，我们假设调用者已经确保了 positions + seq_len 不会越界
+            # 或者 positions 在当前容量范围内
             for b in range(batch_size):
                 pos = positions[b]
+                # 边界检查
+                if pos + seq_len > self.current_capacity:
+                    # 如果指定了位置但空间不够，且位置是连续的，可以尝试扩容
+                    # 这里为了简单，如果位置指定模式下空间不足，直接报错或强制扩容到指定位置
+                    self._ensure_capacity(layer_idx, pos + seq_len)
+                    
                 self.k_cache[layer_idx][b, :, pos:pos+seq_len, :] = key_states[b]
                 self.v_cache[layer_idx][b, :, pos:pos+seq_len, :] = value_states[b]
-    
-    def get_seq_length(self, batch_idx: int = 0) -> int:
-        """获取指定batch的序列长度"""
-        return self.seq_lengths[batch_idx].item()
-    
-    def reset(self):
-        """重置Cache"""
-        self.seq_lengths.zero_()
-        for k, v in zip(self.k_cache, self.v_cache):
-            k.zero_()
-            v.zero_()
-    
-    def trim(self, new_seq_lengths: torch.Tensor):
-        """裁剪到指定长度"""
-        self.seq_lengths = new_seq_lengths
-
-
-class PagedKVCache:
-    """
-    Paged KV Cache (简化版)
-    
-    使用分页管理，适合长序列生成
-    """
-    
-    def __init__(
-        self,
-        num_layers: int,
-        num_kv_heads: int,
-        head_dim: int,
-        page_size: int = 16,
-        max_pages: int = 1024,
-        dtype: torch.dtype = torch.float16,
-        device: str = "cuda",
-    ):
-        self.num_layers = num_layers
-        self.num_kv_heads = num_kv_heads
-        self.head_dim = head_dim
-        self.page_size = page_size
-        self.max_pages = max_pages
-        
-        # 分配页
-        self.pages_k = [
-            torch.zeros(
-                max_pages, num_kv_heads, page_size, head_dim,
-                dtype=dtype, device=device
-            )
-            for _ in range(num_layers)
-        ]
-        self.pages_v = [
-            torch.zeros(
-                max_pages, num_kv_heads, page_size, head_dim,
-                dtype=dtype, device=device
-            )
-            for _ in range(num_layers)
-        ]
-        
-        # 页表: 记录每个序列使用的页
-        self.page_tables = {}  # {seq_id: [page_indices]}
-    
-    def allocate_pages(self, seq_id: int, num_pages: int) -> List[int]:
-        """为序列分配页"""
-        # 简化实现：顺序分配
-        start_idx = len(self.page_tables) * self.max_pages // 100  # 简单分配策略
-        page_indices = list(range(start_idx, start_idx + num_pages))
-        self.page_tables[seq_id] = page_indices
-        return page_indices
-    
-    def get_kv(self, layer_idx: int, seq_id: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        """获取指定序列的KV（需要gather pages）"""
-        page_indices = self.page_tables.get(seq_id, [])
-        
-        # Gather pages
-        k_pages = [self.pages_k[layer_idx][idx] for idx in page_indices]
-        v_pages = [self.pages_v[layer_idx][idx] for idx in page_indices]
-        
-        # 拼接
-        k = torch.cat(k_pages, dim=1) if k_pages else torch.empty(0)
-        v = torch.cat(v_pages, dim=1) if v_pages else torch.empty(0)
-        
-        return k, v
 
 
 if __name__ == "__main__":

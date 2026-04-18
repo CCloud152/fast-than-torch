@@ -10,10 +10,11 @@ import os
 # 添加父目录到路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from model.config import LlamaConfig
-from model.modling_llama import LlamaForCausalLM, create_llama3_2_3b
+from transformers import AutoConfig
+
+
+from model.modling_llama import LlamaForCausalLM
 from interfence.engine import InferenceEngine
-from interfence.tokenizer_utils import TokenizerUtils
 
 
 def test_model_initialization():
@@ -21,7 +22,7 @@ def test_model_initialization():
     print("\n=== Test: Model Initialization ===")
     
     # 创建配置
-    config = LlamaConfig.llama3_2_3b()
+    config = AutoConfig.from_pretrained("meta-llama/Llama-3.2-3B")
     
     # 创建模型
     model = LlamaForCausalLM(config, use_triton=True)
@@ -48,15 +49,14 @@ def test_forward_pass():
         return True
     
     # 使用小配置加速测试
-    config = LlamaConfig(
-        vocab_size=1000,
-        hidden_size=512,
-        intermediate_size=1024,
-        num_hidden_layers=2,
-        num_attention_heads=8,
-        num_key_value_heads=4,
-        max_position_embeddings=512,
-    )
+    config = AutoConfig.from_pretrained("meta-llama/Llama-3.2-3B")
+    config.vocab_size = 1000
+    config.hidden_size = 512          
+    config.intermediate_size = 1024
+    config.num_hidden_layers = 2      
+    config.num_attention_heads = 8    
+    config.num_key_value_heads = 4
+    config.max_position_embeddings = 512
     
     model = LlamaForCausalLM(config, use_triton=True).cuda().half()
     model.eval()
@@ -87,16 +87,15 @@ def test_inference_engine():
         print("CUDA not available, skipping GPU test")
         return True
     
-    # 使用小配置
-    config = LlamaConfig(
-        vocab_size=1000,
-        hidden_size=512,
-        intermediate_size=1024,
-        num_hidden_layers=2,
-        num_attention_heads=8,
-        num_key_value_heads=4,
-        max_position_embeddings=512,
-    )
+    # 使用小配置加速测试
+    config = AutoConfig.from_pretrained("meta-llama/Llama-3.2-3B")
+    config.vocab_size = 1000
+    config.hidden_size = 512          
+    config.intermediate_size = 1024
+    config.num_hidden_layers = 2      
+    config.num_attention_heads = 8    
+    config.num_key_value_heads = 4
+    config.max_position_embeddings = 512
     
     # 创建引擎
     engine = InferenceEngine(config=config, dtype=torch.float16)

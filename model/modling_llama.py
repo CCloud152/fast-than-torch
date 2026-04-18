@@ -6,78 +6,13 @@ import torch
 import torch.nn as nn
 from typing import Optional, Tuple, List
 
-from .config import LlamaConfig
+from transformers import PretrainedConfig
+from transformers import AutoConfig
+
+from .layers.ffn_fused_triton import LlamaMLPTriton
 from .layers.rms_norm_triton import LlamaRMSNormTriton
 from .layers.rope_triton import LlamaRotaryEmbeddingTriton
-from .layers.attention import LlamaAttentionTriton
-
-# 尝试导入Triton FFN kernel
-try:
-    from ..kernels.ffn_fused import ffn_fused_swiglu
-    TRITON_AVAILABLE = True
-except ImportError:
-    try:
-        from kernels.ffn_fused import ffn_fused_swiglu
-        TRITON_AVAILABLE = True
-    except ImportError:
-        TRITON_AVAILABLE = False
-
-
-class LlamaMLPTriton(nn.Module):
-    """
-    LLaMA MLP (FFN) with Triton加速
-    
-    LLaMA使用SwiGLU激活:
-    - gate = x @ W_gate
-    - up = x @ W_up
-    - hidden = SiLU(gate) * up
-    - output = hidden @ W_down
-    """
-    
-    def __init__(
-        self,
-        hidden_size: int,
-        intermediate_size: int,
-        use_triton: bool = True,
-    ):
-        super().__init__()
-        self.hidden_size = hidden_size
-        self.intermediate_size = intermediate_size
-        self.use_triton = use_triton and TRITON_AVAILABLE
-        
-        # 三个投影矩阵
-        self.gate_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
-        self.up_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
-        self.down_proj = nn.Linear(intermediate_size, hidden_size, bias=False)
-        
-        self.act_fn = nn.SiLU()
-    
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: [batch, seq_len, hidden_size]
-        
-        Returns:
-            output: [batch, seq_len, hidden_size]
-        """
-        if self.use_triton:
-            try:
-                # 使用Triton融合kernel
-                return ffn_fused_swiglu(
-                    x,
-                    self.gate_proj.weight,
-                    self.up_proj.weight,
-                    self.down_proj.weight,
-                )
-            except Exception as e:
-                # 失败时回退到PyTorch
-                pass
-        
-        # PyTorch实现
-        gate = self.gate_proj(x)
-        up = self.up_proj(x)
-        hidden = self.act_fn(gate) * up
-        return self.down_proj(hidden)
+from .layers.attention_triton import LlamaAttentionTriton
 
 
 class LlamaDecoderLayer(nn.Module):
@@ -91,7 +26,7 @@ class LlamaDecoderLayer(nn.Module):
     
     def __init__(
         self,
-        config: LlamaConfig,
+        config: PretrainedConfig,
         layer_idx: int,
         use_triton: bool = True,
     ):
@@ -177,7 +112,7 @@ class LlamaModel(nn.Module):
     
     def __init__(
         self,
-        config: LlamaConfig,
+        config: PretrainedConfig,
         use_triton: bool = True,
     ):
         super().__init__()
@@ -282,7 +217,7 @@ class LlamaForCausalLM(nn.Module):
     
     def __init__(
         self,
-        config: LlamaConfig,
+        config: PretrainedConfig,
         use_triton: bool = True,
     ):
         super().__init__()
@@ -420,7 +355,7 @@ def create_llama3_2_3b(use_triton: bool = True) -> LlamaForCausalLM:
     Returns:
         model: LLaMA 3.2 3B模型
     """
-    config = LlamaConfig.llama3_2_3b()
+    config = AutoConfig.from_pretrained("meta-llama/Llama-3.2-3B")
     model = LlamaForCausalLM(config, use_triton=use_triton)
     return model
 
