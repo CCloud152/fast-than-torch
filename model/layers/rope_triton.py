@@ -7,14 +7,12 @@ import torch.nn as nn
 
 # 尝试导入Triton kernel
 try:
-    from ...kernels.rope_fused import rope_fused, precompute_rope_rotary_cache
+    from llama3.kernels.rope_fused import rope_fused, precompute_rope_rotary_cache
+    # print("vic!")
     TRITON_AVAILABLE = True
 except ImportError:
-    try:
-        from kernels.rope_fused import rope_fused, precompute_rope_rotary_cache
-        TRITON_AVAILABLE = True
-    except ImportError:
-        TRITON_AVAILABLE = False
+    # print("fail!")
+    TRITON_AVAILABLE = False
 
 
 class LlamaRotaryEmbeddingTriton(nn.Module):
@@ -114,8 +112,10 @@ class LlamaRotaryEmbeddingTriton(nn.Module):
                 q_rot = q_rot.transpose(1, 2)
                 k_rot = k_rot.transpose(1, 2)
                 
+                # print("triton using!")
                 return q_rot, k_rot
             except Exception as e:
+                # print(f"{e}")
                 pass
         
         # PyTorch实现
@@ -123,6 +123,7 @@ class LlamaRotaryEmbeddingTriton(nn.Module):
         cos = cos.unsqueeze(1)  # [seq_len, 1, head_dim//2]
         sin = sin.unsqueeze(1)
         
+        # print("torch using!")
         return self._rope_pytorch(q, k, cos, sin)
 
 

@@ -7,10 +7,12 @@ import torch.nn as nn
 
 # 尝试导入Triton kernel
 try:
-    from ...kernels.rms_fused import rms_norm_fused
+    from llama3.kernels.rms_fused import rms_norm_fused
     TRITON_AVAILABLE = True
+    # print("vic!")
 except ImportError:
     TRITON_AVAILABLE = False
+    # print("fail!")
 
 
 class LlamaRMSNormTriton(nn.Module):
@@ -51,12 +53,15 @@ class LlamaRMSNormTriton(nn.Module):
         # 尝试Triton加速
         if self.use_triton:
             try:
+                # print("use triton!")
                 return rms_norm_fused(x, self.weight, self.eps)
             except Exception as e:
                 # 失败时回退到PyTorch
+                print(f"{e}")
                 pass
         
         # PyTorch实现
+        # print("use torch!")
         return self._rms_norm_pytorch(x)
     
     def forward_with_residual(self, x: torch.Tensor, residual: torch.Tensor = None):

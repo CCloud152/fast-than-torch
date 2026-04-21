@@ -6,20 +6,16 @@ LLaMA Attention Layer with Triton Kernels
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 
 # 尝试导入Triton kernel
 try:
-    from ...kernels.attention_prefill import flash_attention_prefill
-    from ...kernels.attention_decode import flash_attention_decode
+    from llama3.kernels.attention_prefill import flash_attention_prefill
+    from llama3.kernels.attention_decode import flash_attention_decode
+    # print("vic!")
     TRITON_AVAILABLE = True
 except ImportError:
-    try:
-        from kernels.attention_prefill import flash_attention_prefill
-        from kernels.attention_decode import flash_attention_decode
-        TRITON_AVAILABLE = True
-    except ImportError:
-        TRITON_AVAILABLE = False
+    # print("fail!")
+    TRITON_AVAILABLE = False
 
 
 class LlamaAttentionTriton(nn.Module):
@@ -114,20 +110,24 @@ class LlamaAttentionTriton(nn.Module):
         if self.use_triton and seq_len > 1:
             # Prefill阶段使用FlashAttention
             try:
+                # print("triton using!")
                 attn_output = self._flash_attention_prefill(
                     query_states, key_states, value_states
                 )
             except Exception as e:
+                # print(f"{e}")
                 attn_output = self._attention_pytorch(
                     query_states, key_states, value_states, attention_mask
                 )
         elif self.use_triton and seq_len == 1:
             # Decode阶段使用优化的decode kernel
             try:
+                # print("triton using!")
                 attn_output = self._flash_attention_decode(
                     query_states, key_states, value_states
                 )
             except Exception as e:
+                # print(f"{e}")
                 attn_output = self._attention_pytorch(
                     query_states, key_states, value_states, attention_mask
                 )

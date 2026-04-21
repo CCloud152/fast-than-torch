@@ -5,16 +5,15 @@ LLaMA MLP (FFN) with Triton Kernel
 import torch
 import torch.nn as nn
 
+from llama3.kernels.ffn_fused import ffn_fused_swiglu
 # 尝试导入Triton kernel
 try:
-    from ...kernels.ffn_fused import ffn_fused_swiglu
+    from llama3.kernels.ffn_fused import ffn_fused_swiglu
     TRITON_AVAILABLE = True
+    # print("vic!")
 except ImportError:
-    try:
-        from kernels.ffn_fused import ffn_fused_swiglu
-        TRITON_AVAILABLE = True
-    except ImportError:
         TRITON_AVAILABLE = False
+        # print("fail!")
 
 
 class LlamaMLPTriton(nn.Module):
@@ -54,14 +53,16 @@ class LlamaMLPTriton(nn.Module):
         Returns:
             output: [batch, seq_len, hidden_size]
         """
+        # print(f"{self.use_triton}")
         if self.use_triton:
             try:
                 # 使用Triton融合kernel
+                # print("use triton!")
                 return ffn_fused_swiglu(
                     x,
                     self.gate_proj.weight,
                     self.up_proj.weight,
-                    self.down_proj.weight,
+                    self.down_proj.weight.t(),
                 )
             except Exception as e:
                 # 失败时回退到PyTorch
@@ -71,6 +72,7 @@ class LlamaMLPTriton(nn.Module):
         gate = self.gate_proj(x)
         up = self.up_proj(x)
         hidden = self.act_fn(gate) * up
+        # print("use torch!")
         return self.down_proj(hidden)
     
 if __name__ == "__main__":
@@ -90,7 +92,7 @@ if __name__ == "__main__":
     x = torch.randn(batch_size, seq_len, hidden_size, device="cuda", dtype=torch.float16)
     
     # 创建层
-    mlp_layer = LlamaMLPTriton(hidden_size, intermediate_size).cuda()
+    mlp_layer = LlamaMLPTriton(hidden_size, intermediate_size).cuda().to(torch.float16)
     
     # 测试前向传播
     output = mlp_layer(x)

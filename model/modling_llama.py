@@ -6,13 +6,13 @@ import torch
 import torch.nn as nn
 from typing import Optional, Tuple, List
 
-from transformers import PretrainedConfig
-from transformers import AutoConfig
+from llama3.model.config import LlamaConfig
+from modelscope import snapshot_download
 
-from .layers.ffn_fused_triton import LlamaMLPTriton
-from .layers.rms_norm_triton import LlamaRMSNormTriton
-from .layers.rope_triton import LlamaRotaryEmbeddingTriton
-from .layers.attention_triton import LlamaAttentionTriton
+from llama3.model.layers.ffn_fused_triton import LlamaMLPTriton
+from llama3.model.layers.rms_norm_triton import LlamaRMSNormTriton
+from llama3.model.layers.rope_triton import LlamaRotaryEmbeddingTriton
+from llama3.model.layers.attention_triton import LlamaAttentionTriton
 
 
 class LlamaDecoderLayer(nn.Module):
@@ -26,7 +26,7 @@ class LlamaDecoderLayer(nn.Module):
     
     def __init__(
         self,
-        config: PretrainedConfig,
+        config: LlamaConfig,
         layer_idx: int,
         use_triton: bool = True,
     ):
@@ -112,7 +112,7 @@ class LlamaModel(nn.Module):
     
     def __init__(
         self,
-        config: PretrainedConfig,
+        config: LlamaConfig,
         use_triton: bool = True,
     ):
         super().__init__()
@@ -217,7 +217,7 @@ class LlamaForCausalLM(nn.Module):
     
     def __init__(
         self,
-        config: PretrainedConfig,
+        config: LlamaConfig,
         use_triton: bool = True,
     ):
         super().__init__()
@@ -355,7 +355,8 @@ def create_llama3_2_3b(use_triton: bool = True) -> LlamaForCausalLM:
     Returns:
         model: LLaMA 3.2 3B模型
     """
-    config = AutoConfig.from_pretrained("meta-llama/Llama-3.2-3B")
+    model_dir = snapshot_download("LLM-Research/Llama-3.2-1B")
+    config = LlamaConfig.from_pretrained(model_dir)
     model = LlamaForCausalLM(config, use_triton=use_triton)
     return model
 
@@ -377,7 +378,9 @@ if __name__ == "__main__":
     
     # 前向传播
     print("Running forward pass...")
-    outputs = model(input_ids)
+    with torch.no_grad():
+        outputs = model(input_ids)
+    
     
     print(f"Input shape:    {input_ids.shape}")
     print(f"Logits shape:   {outputs['logits'].shape}")

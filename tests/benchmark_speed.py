@@ -13,154 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from transformers import AutoConfig
 
-from model.modling_llama import LlamaForCausalLM
-
-
-def benchmark_rmsnorm():
-    """测试RMSNorm性能"""
-    print("\n=== Benchmark: RMSNorm ===")
-    
-    if not torch.cuda.is_available():
-        print("CUDA not available, skipping")
-        return
-    
-    from model.layers.rms_norm_triton import LlamaRMSNormTriton
-    
-    batch_size, seq_len, hidden_size = 8, 512, 3072
-    
-    # 创建输入
-    x = torch.randn(batch_size, seq_len, hidden_size, device="cuda", dtype=torch.float16)
-    
-    # PyTorch版本
-    norm_torch = LlamaRMSNormTriton(hidden_size, use_triton=False).cuda()
-    
-    # Triton版本
-    norm_triton = LlamaRMSNormTriton(hidden_size, use_triton=True).cuda()
-    
-    # Warmup
-    for _ in range(10):
-        _ = norm_torch(x)
-        _ = norm_triton(x)
-    torch.cuda.synchronize()
-    
-    # Benchmark PyTorch
-    n_iters = 100
-    start = time.perf_counter()
-    for _ in range(n_iters):
-        _ = norm_torch(x)
-    torch.cuda.synchronize()
-    pytorch_time = (time.perf_counter() - start) / n_iters * 1000
-    
-    # Benchmark Triton
-    start = time.perf_counter()
-    for _ in range(n_iters):
-        _ = norm_triton(x)
-    torch.cuda.synchronize()
-    triton_time = (time.perf_counter() - start) / n_iters * 1000
-    
-    print(f"PyTorch RMSNorm: {pytorch_time:.3f} ms")
-    print(f"Triton RMSNorm:  {triton_time:.3f} ms")
-    print(f"Speedup: {pytorch_time/triton_time:.2f}x")
-
-
-def benchmark_ffn():
-    """测试FFN性能"""
-    print("\n=== Benchmark: FFN (SwiGLU) ===")
-    
-    if not torch.cuda.is_available():
-        print("CUDA not available, skipping")
-        return
-    
-    from model.modling_llama import LlamaMLPTriton
-    
-    batch_size, seq_len = 8, 512
-    hidden_size = 3072
-    intermediate_size = 8192
-    
-    x = torch.randn(batch_size, seq_len, hidden_size, device="cuda", dtype=torch.float16)
-    
-    # PyTorch版本
-    mlp_torch = LlamaMLPTriton(hidden_size, intermediate_size, use_triton=False).cuda().half()
-    
-    # Triton版本
-    mlp_triton = LlamaMLPTriton(hidden_size, intermediate_size, use_triton=True).cuda().half()
-    
-    # Warmup
-    for _ in range(10):
-        _ = mlp_torch(x)
-        _ = mlp_triton(x)
-    torch.cuda.synchronize()
-    
-    # Benchmark
-    n_iters = 50
-    start = time.perf_counter()
-    for _ in range(n_iters):
-        _ = mlp_torch(x)
-    torch.cuda.synchronize()
-    pytorch_time = (time.perf_counter() - start) / n_iters * 1000
-    
-    start = time.perf_counter()
-    for _ in range(n_iters):
-        _ = mlp_triton(x)
-    torch.cuda.synchronize()
-    triton_time = (time.perf_counter() - start) / n_iters * 1000
-    
-    print(f"PyTorch FFN: {pytorch_time:.3f} ms")
-    print(f"Triton FFN:  {triton_time:.3f} ms")
-    print(f"Speedup: {pytorch_time/triton_time:.2f}x")
-
-
-def benchmark_attention():
-    """测试Attention性能"""
-    print("\n=== Benchmark: Attention ===")
-    
-    if not torch.cuda.is_available():
-        print("CUDA not available, skipping")
-        return
-    
-    from triton_infer.llama3.model.layers.attention_triton import LlamaAttentionTriton
-    
-    batch_size, seq_len = 2, 1024
-    hidden_size = 3072
-    num_heads = 24
-    num_kv_heads = 8
-    head_dim = 128
-    
-    x = torch.randn(batch_size, seq_len, hidden_size, device="cuda", dtype=torch.float16)
-    
-    # PyTorch版本
-    attn_torch = LlamaAttentionTriton(
-        hidden_size, num_heads, num_kv_heads, head_dim, use_triton=False
-    ).cuda().half()
-    
-    # Triton版本
-    attn_triton = LlamaAttentionTriton(
-        hidden_size, num_heads, num_kv_heads, head_dim, use_triton=True
-    ).cuda().half()
-    
-    # Warmup
-    for _ in range(5):
-        _ = attn_torch(x)
-        _ = attn_triton(x)
-    torch.cuda.synchronize()
-    
-    # Benchmark
-    n_iters = 20
-    start = time.perf_counter()
-    for _ in range(n_iters):
-        _ = attn_torch(x)
-    torch.cuda.synchronize()
-    pytorch_time = (time.perf_counter() - start) / n_iters * 1000
-    
-    start = time.perf_counter()
-    for _ in range(n_iters):
-        _ = attn_triton(x)
-    torch.cuda.synchronize()
-    triton_time = (time.perf_counter() - start) / n_iters * 1000
-    
-    print(f"PyTorch Attention: {pytorch_time:.3f} ms")
-    print(f"Triton Attention:  {triton_time:.3f} ms")
-    print(f"Speedup: {pytorch_time/triton_time:.2f}x")
+from project.llama3.model.modling_llama import LlamaForCausalLM
 
 
 def benchmark_full_model():
@@ -239,7 +92,7 @@ def benchmark_generation():
         print("CUDA not available, skipping")
         return
     
-    from interfence.engine import InferenceEngine
+    from project.llama3.interfence.engine import InferenceEngine
     
     # 使用小配置快速测试
     config = AutoConfig.from_pretrained("meta-llama/Llama-3.2-3B")
@@ -277,9 +130,6 @@ def run_all_benchmarks():
     print("=" * 60)
     
     benchmarks = [
-        benchmark_rmsnorm,
-        benchmark_ffn,
-        benchmark_attention,
         benchmark_full_model,
         benchmark_generation,
     ]
