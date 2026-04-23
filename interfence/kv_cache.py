@@ -157,7 +157,7 @@ class KVCache:
         
         # 如果是追加模式，计算需要的总容量
         if positions is None:
-            required_capacity = self.seq_lengths[0].item() + seq_len
+            required_capacity = self.seq_lengths.max().item() + seq_len
             
             # 触发扩容检查
             self._ensure_capacity(layer_idx, required_capacity)
@@ -181,6 +181,8 @@ class KVCache:
                     # 如果指定了位置但空间不够，且位置是连续的，可以尝试扩容
                     # 这里为了简单，如果位置指定模式下空间不足，直接报错或强制扩容到指定位置
                     self._ensure_capacity(layer_idx, pos + seq_len)
+                    # 更新逻辑长度
+                    self.seq_lengths[b] = max(self.seq_lengths[b].item(), pos + seq_len)
                     
                 self.k_cache[layer_idx][b, :, pos:pos+seq_len, :] = key_states[b]
                 self.v_cache[layer_idx][b, :, pos:pos+seq_len, :] = value_states[b]
@@ -213,5 +215,5 @@ if __name__ == "__main__":
     cache.update_cache(0, key_states, value_states)
     
     print(f"Cache shape: {cache.k_cache[0].shape}")
-    print(f"Seq length: {cache.get_seq_length()}")
+    print(f"Seq length: {cache.seq_lengths}")
     print("✓ KV Cache test PASSED!")

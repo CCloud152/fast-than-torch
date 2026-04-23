@@ -9,11 +9,13 @@ import sys
 import os
 
 # 添加父目录到路径
+from safetensors.torch import load_file
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from transformers import AutoConfig
-
-from project.llama3.model.modling_llama import LlamaForCausalLM
+from llama3.model.config import LlamaConfig
+from modelscope import snapshot_download
+from transformers import AutoTokenizer
+from llama3.model.modling_llama import LlamaForCausalLM
 
 
 def benchmark_full_model():
@@ -25,14 +27,8 @@ def benchmark_full_model():
         return
     
     # 使用中等配置
-    config = AutoConfig.from_pretrained("meta-llama/Llama-3.2-3B")
-    config.vocab_size = 128256
-    config.hidden_size = 2048
-    config.intermediate_size=8192
-    config.num_hidden_layers=16
-    config.num_attention_heads=16
-    config.num_key_value_heads=4
-    config.max_position_embeddings=8192
+    model_dir = snapshot_download("LLM-Research/Llama-3.2-1B")
+    config = LlamaConfig.from_pretrained(model_dir)
     
     batch_size = 1
     seq_len = 512
@@ -92,35 +88,86 @@ def benchmark_generation():
         print("CUDA not available, skipping")
         return
     
-    from project.llama3.interfence.engine import InferenceEngine
+    from llama3.interfence.engine import InferenceEngine
     
-    # 使用小配置快速测试
-    config = AutoConfig.from_pretrained("meta-llama/Llama-3.2-3B")
-    config.vocab_size = 128256
-    config.hidden_size = 1024
-    config.intermediate_size = 4096
-    config.num_hidden_layers = 8
-    config.num_attention_heads = 8
-    config.num_key_value_heads = 4
-    config.max_position_embeddings = 4096
+    # 加载模型配置
+    model_dir = snapshot_download("LLM-Research/Llama-3.2-1B")
+    tokenizer = AutoTokenizer.from_pretrained(model_dir)
+    config = LlamaConfig.from_pretrained(model_dir)
+    model_triton = LlamaForCausalLM(config, use_triton=True)
+    model_torch = LlamaForCausalLM(config, use_triton=False)
+    weight_path = f"{model_dir}/model.safetensors"
+    state_dict = load_file(weight_path)  # 读取safetensors权重字典
     
-    prompt = "Hello world, this is a test"
-    max_new_tokens = 50
+    prompt = "Hello"
+    max_new_tokens = 5
     
     print(f"Prompt: '{prompt}'")
     print(f"Max new tokens: {max_new_tokens}")
     
+    def run_engine(engine, name):
+        print(f"\n{name}:")
+        
+        # Warmup
+        with torch.no_grad():
+            _ = engine.generate(prompt, max_new_tokens=5, do_sample=False)
+        torch.cuda.synchronize()
+        
+        # 正式测试
+        import time
+        start = time.perf_counter()
+        
+        with torch.no_grad():
+            output = engine.generate(
+                prompt, 
+                max_new_tokens=max_new_tokens,
+                do_sample=False,        # 固定 greedy，保证两次输出一致且可比
+                temperature=1.0,
+            )
+        
+        torch.cuda.synchronize()
+        elapsed = time.perf_counter() - start
+        
+        # 统计
+        stats = engine.get_stats()
+        prompt_tokens = len(tokenizer.encode(prompt))
+        total_tokens = len(tokenizer.encode(output))
+        new_tokens = total_tokens - prompt_tokens
+        
+        print(f"  Output: {output[:100]}{'...' if len(output)>100 else ''}")
+        print(f"  Total time: {elapsed*1000:.2f} ms")
+        print(f"  New tokens: {new_tokens}")
+        print(f"  Prefill: {stats['prefill_time_ms']:.2f} ms")
+        print(f"  Decode:  {stats['decode_time_ms']:.2f} ms")
+        if stats.get('decode_tokens_per_sec'):
+            print(f"  Decode speed: {stats['decode_tokens_per_sec']:.2f} tokens/sec")
+        
+        return elapsed, output
+    
     # PyTorch版本
-    print("\nPyTorch version:")
-    engine_torch = InferenceEngine(config=config, dtype=torch.float16)
-    # 这里简化处理，实际应该运行完整生成
+    model_torch.load_state_dict(state_dict, strict=True)
+    model_torch.eval()
+    engine_torch = InferenceEngine(model=model_torch, tokenizer=tokenizer, device="cuda", dtype=torch.float16)
+    time_torch, out_torch = run_engine(engine_torch, "PyTorch")
     
-    # Triton版本
-    print("\nTriton version:")
-    engine_triton = InferenceEngine(config=config, dtype=torch.float16)
-    # 这里简化处理，实际应该运行完整生成
+    # 清显存，防止 Triton 测试受干扰
+    del engine_torch, model_torch
+    torch.cuda.empty_cache()
+    # torch.cuda.synchronize()
     
-    print("\nNote: Full generation benchmark requires trained model weights")
+    # # Triton版本
+    # model_triton.load_state_dict(state_dict, strict=True)
+    # model_triton.eval()
+    # engine_triton = InferenceEngine(model=model_triton, tokenizer=tokenizer, device="cuda", dtype=torch.float16)
+    # time_triton, out_triton = run_engine(engine_triton, "Triton")
+    
+    # # 一致性检查
+    # print(f"\n{'='*40}")
+    # print(f"Speedup (total): {time_torch/time_triton:.2f}x")
+    # if out_torch == out_triton:
+    #     print("✓ Outputs match exactly")
+    # else:
+    #     print("⚠ Outputs differ (expected for fp16 + different kernels)")
 
 
 def run_all_benchmarks():
@@ -130,7 +177,7 @@ def run_all_benchmarks():
     print("=" * 60)
     
     benchmarks = [
-        benchmark_full_model,
+        # benchmark_full_model,
         benchmark_generation,
     ]
     

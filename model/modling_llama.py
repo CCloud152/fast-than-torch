@@ -178,7 +178,20 @@ class LlamaModel(nn.Module):
         
         # 获取RoPE位置编码
         batch_size, seq_len = input_ids.shape
-        position_embeddings = self.rotary_emb.cos_cached[:seq_len], self.rotary_emb.sin_cached[:seq_len]
+        if past_key_values is not None and past_key_values[0] is not None:
+            # 增量推理：seq_len 应该是 past_length + current_seq_len
+            past_length = past_key_values[0][0].size(-2)  # 取 K 的 seq_len
+            position_ids = torch.arange(
+                past_length, past_length + seq_len,
+                dtype=torch.long, device=input_ids.device
+            ).unsqueeze(0)
+        else:
+            position_ids = torch.arange(
+            seq_len, dtype=torch.long, device=input_ids.device
+            ).unsqueeze(0)
+
+        # 根据 position_ids 取 RoPE，而不是简单 [:seq_len]
+        position_embeddings = self.rotary_emb.cos_cached[position_ids], self.rotary_emb.sin_cached[position_ids]
         
         # 处理KV Cache
         if past_key_values is None:
@@ -205,7 +218,7 @@ class LlamaModel(nn.Module):
         # 最终归一化
         hidden_states = self.norm(hidden_states)
         
-        return hidden_states
+        return hidden_states if not use_cache else (hidden_states, next_decoder_cache)
 
 
 class LlamaForCausalLM(nn.Module):
@@ -255,14 +268,19 @@ class LlamaForCausalLM(nn.Module):
             logits: [batch, seq_len, vocab_size]
             loss: 如果提供了labels
         """
+        use_cache = use_cache if use_cache is not None else self.config.use_cache
         # 获取模型输出
-        hidden_states = self.model(
+        model_outputs = self.model(
             input_ids=input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
+            past_key_values=past_key_values,  # 传进去
             use_cache=use_cache,
         )
+        
+        if use_cache:
+            hidden_states, past_key_values = model_outputs
+        else:
+            hidden_states = model_outputs
+            past_key_values = None
         
         # LM Head
         logits = self.lm_head(hidden_states)
@@ -281,7 +299,8 @@ class LlamaForCausalLM(nn.Module):
         return {
             "loss": loss,
             "logits": logits,
-            "hidden_states": hidden_states,
+            # "hidden_states": hidden_states,
+            "past_key_values": past_key_values,
         }
     
     def generate(
@@ -305,44 +324,39 @@ class LlamaForCausalLM(nn.Module):
         Returns:
             generated_ids: [batch, seq_len + max_new_tokens]
         """
-        self.eval()
+        batch_size, seq_len = input_ids.shape
+        past_key_values = None
+        generated = input_ids.clone()  # 维护完整序列用于返回
+    
         with torch.no_grad():
-            for _ in range(max_new_tokens):
-                # 前向传播
-                outputs = self.forward(input_ids=input_ids, use_cache=True)
+            for i in range(max_new_tokens):
+                # 只有第一步传完整 prompt，后面只传 1 个 token
+                inputs = input_ids if past_key_values is None else next_token.unsqueeze(-1)
+            
+                outputs = self.forward(
+                    input_ids=inputs,
+                    past_key_values=past_key_values,
+                    use_cache=True,
+                )
+            
                 logits = outputs["logits"]
-                
-                # 取最后一个token的logits
-                next_token_logits = logits[:, -1, :]
-                
-                # 应用temperature
-                if temperature != 1.0:
-                    next_token_logits = next_token_logits / temperature
-                
-                # 采样
+                past_key_values = outputs["past_key_values"]
+            
+                next_token_logits = logits[:, -1, :] / temperature
+            
                 if do_sample:
-                    probs = torch.softmax(next_token_logits, dim=-1)
-                    # Top-p sampling (简化版)
-                    sorted_probs, sorted_indices = torch.sort(probs, descending=True)
-                    cumsum_probs = torch.cumsum(sorted_probs, dim=-1)
-                    sorted_indices_to_remove = cumsum_probs > top_p
-                    sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-                    sorted_indices_to_remove[..., 0] = 0
-                    
-                    indices_to_remove = sorted_indices_to_remove.scatter(
-                        1, sorted_indices, sorted_indices_to_remove
-                    )
-                    next_token_logits = next_token_logits.masked_fill(indices_to_remove, float('-inf'))
-                    
                     probs = torch.softmax(next_token_logits, dim=-1)
                     next_token = torch.multinomial(probs, num_samples=1)
                 else:
                     next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
-                
-                # 拼接到输入
-                input_ids = torch.cat([input_ids, next_token], dim=-1)
-        
-        return input_ids
+            
+                generated = torch.cat([generated, next_token], dim=-1)
+            
+                # 检查 EOS
+                if next_token.item() == getattr(self.config, 'eos_token_id', 2):
+                    break
+    
+        return generated
 
 
 def create_llama3_2_3b(use_triton: bool = True) -> LlamaForCausalLM:

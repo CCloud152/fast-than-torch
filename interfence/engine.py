@@ -7,11 +7,12 @@ import torch
 import torch.nn as nn
 from typing import Optional, List, Generator
 
-from ..model.modling_llama import LlamaForCausalLM
-from .kv_cache import KVCache
+from llama3.model.config import LlamaConfig
+from llama3.model.modling_llama import LlamaForCausalLM
+from llama3.interfence.kv_cache import KVCache
 
-from transformers import PreTrainedTokenizer
-from transformers import AutoConfig
+from modelscope import snapshot_download
+from transformers import AutoTokenizer
 
 
 class InferenceEngine:
@@ -27,7 +28,7 @@ class InferenceEngine:
     def __init__(
         self,
         model: LlamaForCausalLM,
-        tokenizer: PreTrainedTokenizer,
+        tokenizer: AutoTokenizer,
         device: str = "cuda",
         dtype: torch.dtype = torch.float16,
     ):
@@ -91,7 +92,7 @@ class InferenceEngine:
         
         # 编码输入
         input_ids = self.tokenizer.encode(prompt, add_special_tokens=True)
-        input_ids = input_ids.to(self.device)
+        input_ids = torch.tensor([input_ids], device=self.device)
         batch_size, prompt_len = input_ids.shape
         
         # 初始化KV Cache
@@ -105,7 +106,8 @@ class InferenceEngine:
             input_ids=input_ids,
             use_cache=True,
         )
-        
+        past_kv = outputs["past_key_values"]  # 拿到 cache！
+
         # 获取最后一个token的logits
         next_token_logits = outputs["logits"][:, -1, :]
         
@@ -134,9 +136,11 @@ class InferenceEngine:
             # 前向传播
             outputs = self.model(
                 input_ids=input_ids,
+                past_key_values=past_kv,
                 use_cache=True,
             )
             
+            past_kv = outputs["past_key_values"]
             next_token_logits = outputs["logits"][:, -1, :]
             
             # 应用重复惩罚
@@ -166,8 +170,9 @@ class InferenceEngine:
         self.decode_time = time.perf_counter() - start_time
         
         # 解码结果
-        all_token_ids = torch.tensor([generated_tokens], device="cpu")
-        generated_text = self.tokenizer.decode(all_token_ids, skip_special_tokens=True)
+        # all_token_ids = torch.tensor([generated_tokens], device="cpu")
+        # generated_text = self.tokenizer.decode(all_token_ids, skip_special_tokens=True)
+        generated_text = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
         
         return generated_text
     
@@ -253,18 +258,18 @@ if __name__ == "__main__":
     
     print("Testing Inference Engine...")
     
-    # 创建模型配置（使用小配置测试）
-    config = AutoConfig.from_pretrained("meta-llama/Llama-3.2-3B")
-    config.vocab_size=128256
-    config.hidden_size=1024
-    config.intermediate_size=4096
-    config.num_hidden_layers=4
-    config.num_attention_heads=8 
-    config.num_key_value_heads=4
-    config.max_position_embeddings=2048
+    # 获取本地模型文件夹
+    model_dir = snapshot_download("LLM-Research/Llama-3.2-1B")
+
+    # 创建 tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(model_dir)
+
+    # 创建模型
+    config = LlamaConfig.from_pretrained(model_dir)
+    model = LlamaForCausalLM(config, use_triton=True)
     
     # 创建引擎
-    engine = InferenceEngine(config=config)
+    engine = InferenceEngine(model=model, tokenizer=tokenizer)
     
     # 测试生成
     prompt = "Hello"
